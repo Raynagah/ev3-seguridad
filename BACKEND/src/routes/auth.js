@@ -1,11 +1,18 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const { pool } = require("../db");
 const validate = require("../middleware/validate");
 const { loginSchema, registerSchema } = require("../validations/auth");
 const { normalizeRut } = require("../utils/rut");
+
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "inseguro";
+const JWT_SECRET = process.env.JWT_SECRET;
+const SALT_ROUNDS = 10;
+
+if (!JWT_SECRET) {
+  throw new Error("ERROR CRÍTICO DE SEGURIDAD: JWT_SECRET no está definido.");
+}
 
 router.post("/login", validate(loginSchema), async (req, res) => {
   const { nombre_usuario, password } = req.body;
@@ -18,7 +25,25 @@ router.post("/login", validate(loginSchema), async (req, res) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
     const user = result.rows[0];
-    if (user.contrasena !== password) {
+
+    // Validación segura con bcrypt (con migración automática si es cuenta semilla antigua)
+    const isBcryptHash =
+      typeof user.contrasena === "string" &&
+      (user.contrasena.startsWith("$2a$") || user.contrasena.startsWith("$2b$"));
+
+    let passwordValid = false;
+    if (isBcryptHash) {
+      passwordValid = await bcrypt.compare(password, user.contrasena);
+    } else if (user.contrasena === password) {
+      passwordValid = true;
+      const upgradedHash = await bcrypt.hash(password, SALT_ROUNDS);
+      await pool.query("UPDATE usuarios SET contrasena = $1 WHERE id = $2", [
+        upgradedHash,
+        user.id,
+      ]);
+    }
+
+    if (!passwordValid) {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
@@ -30,7 +55,7 @@ router.post("/login", validate(loginSchema), async (req, res) => {
        WHERE ur.usuario_id = $1`,
       [user.id]
     );
-    const roles = rolesResult.rows.map(r => ({ id: r.id, nombre: r.nombre }));
+    const roles = rolesResult.rows.map((r) => ({ id: r.id, nombre: r.nombre }));
     const rolNombre = roles.length > 0 ? roles[0].nombre : null;
     const rolId = roles.length > 0 ? roles[0].id : null;
 
@@ -39,16 +64,17 @@ router.post("/login", validate(loginSchema), async (req, res) => {
       "SELECT id FROM pacientes WHERE usuario_id = $1",
       [user.id]
     );
-    const pacienteId = pacienteResult.rows.length > 0 ? pacienteResult.rows[0].id : null;
+    const pacienteId =
+      pacienteResult.rows.length > 0 ? pacienteResult.rows[0].id : null;
 
     const token = jwt.sign(
-      { 
-        usuarioId: user.id, 
+      {
+        usuarioId: user.id,
         nombreUsuario: user.nombre_usuario,
         rolId: rolId,
         rolNombre: rolNombre,
         pacienteId: pacienteId,
-        roles: roles
+        roles: roles,
       },
       JWT_SECRET,
       { expiresIn: "2h" }
@@ -59,10 +85,10 @@ router.post("/login", validate(loginSchema), async (req, res) => {
       [user.id, "LOGIN: usuario inició sesión"]
     );
 
-    res.json({ token });
+    return res.json({ token });
   } catch (err) {
     console.error(err);
-    res
+    return res
       .status(500)
       .json({ error: "Error en login", glosa: err.message || err.toString() });
   }
@@ -73,7 +99,7 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
   try {
     // Normalizar RUT antes de procesar
     const normalizedRut = rut ? normalizeRut(rut) : null;
-    
+
     // Verificar si el RUT ya existe en pacientes
     let pacienteExistente = null;
     if (normalizedRut) {
@@ -83,7 +109,6 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
       );
       if (rutCheck.rows.length > 0) {
         pacienteExistente = rutCheck.rows[0];
-        // Si el paciente ya tiene un usuario asociado, rechazar
         if (pacienteExistente.usuario_id) {
           return res.status(400).json({
             error: "RUT ya registrado",
@@ -105,10 +130,13 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
       });
     }
 
-    // Crear usuario
+    // Hashear contraseña antes de almacenar en PostgreSQL (Mitiga DEF-001)
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+
+    // Crear usuario sin devolver la contraseña en la respuesta
     const userResult = await pool.query(
       "INSERT INTO usuarios (nombre_usuario, contrasena, correo) VALUES ($1, $2, $3) RETURNING id, nombre_usuario, correo, created_at",
-      [nombre_usuario, password, correo]
+      [nombre_usuario, passwordHash, correo]
     );
     const user = userResult.rows[0];
 
@@ -126,13 +154,11 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
     // Si se proporciona RUT, crear o actualizar paciente
     if (normalizedRut) {
       if (pacienteExistente) {
-        // Actualizar paciente existente con usuario_id (ya verificado que no tiene usuario)
         await pool.query(
           "UPDATE pacientes SET usuario_id = $1 WHERE rut = $2",
           [user.id, normalizedRut]
         );
       } else {
-        // Crear paciente básico (se completará después)
         await pool.query(
           `INSERT INTO pacientes (rut, primer_nombre, apellido_paterno, email, fecha_nacimiento, sexo, usuario_id)
            VALUES ($1, $2, $3, $4, '2000-01-01', 'M', $5)`,
@@ -146,7 +172,7 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
       [user.id, "REGISTRO: nuevo usuario registrado"]
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Usuario registrado exitosamente",
       usuario: user,
     });
@@ -158,7 +184,7 @@ router.post("/registro", validate(registerSchema), async (req, res) => {
         glosa: "El nombre de usuario o correo ya existe",
       });
     }
-    res.status(500).json({
+    return res.status(500).json({
       error: "Error al registrar",
       glosa: err.message || err.toString(),
     });
