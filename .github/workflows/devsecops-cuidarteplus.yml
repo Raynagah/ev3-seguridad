@@ -78,18 +78,24 @@ jobs:
           npx playwright test
 
       - name: Ejecutar escaneo dinámico de seguridad DAST (OWASP ZAP)
-        uses: zaproxy/action-baseline@v0.12.0
-        with:
-          target: 'http://172.17.0.1:3333'
-          allow_issue_writing: false
-          fail_action: false
+        run: |
+          mkdir -p zap-reports && chmod 777 zap-reports
+          EXIT_CODE=0
+          docker run --rm -v "$(pwd)/zap-reports:/zap/wrk/:rw" --network=host \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://172.17.0.1:3333 \
+            -J report_json.json -w report_md.md -r report_html.html || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -eq 1 ] || [ "$EXIT_CODE" -eq 3 ]; then
+            echo "OWASP ZAP detectó vulnerabilidades críticas (código $EXIT_CODE)"
+            exit 1
+          fi
 
       - name: Guardar reporte de auditoría DAST (OWASP ZAP)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: owasp-zap-report
-          path: report_html.html
+          path: zap-reports/
 
       - name: Apagar entorno QA
         if: always()
