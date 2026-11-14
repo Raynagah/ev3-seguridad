@@ -33,15 +33,26 @@ RUN npm run build
 # Etapa 2: Producción
 FROM nginx:alpine
 
+# Permitir que el usuario sin privilegios 'nginx' escuche en el puerto 80 sin ser root
+RUN apk add --no-cache libcap && \
+    setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx && \
+    sed -i 's/^user  nginx;/# user nginx;/' /etc/nginx/nginx.conf
+
 # Copiar los archivos construidos desde la etapa de construcción
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Copiar configuración de nginx personalizada
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Asignar permisos de lectura/escritura necesarios al usuario 'nginx'
+RUN touch /var/run/nginx.pid && \
+    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /var/run/nginx.pid /usr/share/nginx/html
+
+# Aplicar principio de menor privilegio (Mitiga hallazgo SAST)
+USER nginx
+
 # Exponer puerto 80
 EXPOSE 80
 
 # Comando para iniciar nginx
 CMD ["nginx", "-g", "daemon off;"]
-

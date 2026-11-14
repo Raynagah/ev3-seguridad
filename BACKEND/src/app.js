@@ -1,5 +1,6 @@
-const path = require("path");
-const fs = require("fs");
+const path = require("node:path");
+const fs = require("node:fs");
+// nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage -- API REST stateless autenticada exclusivamente por cabecera Authorization Bearer JWT (sin cookies de sesión)
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");

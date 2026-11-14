@@ -283,10 +283,12 @@ router.get("/:id", async (req, res) => {
     }
 
     res.setHeader("Content-Type", contentType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${safeFileName}"`
     );
+    // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write -- Descarga binaria (Buffer) con MIME estrictamente validado (PDF/JPG/PNG) y Content-Disposition attachment
     return res.send(documento.documento);
   } catch (err) {
     console.error(err);

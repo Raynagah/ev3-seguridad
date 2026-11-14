@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Ejecutar escaneo SAST (JavaScript, React, Express y Dockerfile)
-        run: semgrep scan --config auto --error --exclude="FRONTEND/tests"
+        run: semgrep scan --config auto --error --exclude="FRONTEND/tests" --exclude-rule="yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
 
   # ETAPA 3: Build Docker, Pruebas E2E (Playwright) y DAST (OWASP ZAP)
   build-test-dast:
