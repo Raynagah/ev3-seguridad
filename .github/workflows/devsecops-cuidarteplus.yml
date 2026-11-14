@@ -82,12 +82,12 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  # ETAPA 4: Compuerta de Liberación (Release Gate GO)
+# ETAPA 4: Compuerta de Liberación (Release Gate GO)
   deploy-production:
     name: 4. Release Gate & Deploy (Estado GO)
     runs-on: ubuntu-latest
     needs: build-test-dast
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Certificar despliegue a Producción
-        run: echo "Todos los controles Shift-Left, SAST, E2E y DAST aprobados. Estado: GO."
+      - name: Certificar despliegue a Produccion
+        run: echo "Controles Shift-Left, SAST, E2E y DAST aprobados. Estado GO."
