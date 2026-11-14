@@ -81,7 +81,15 @@ jobs:
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: 'http://172.17.0.1:3333'
+          allow_issue_writing: false
           fail_action: false
+
+      - name: Guardar reporte de auditoría DAST (OWASP ZAP)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-zap-report
+          path: report_html.html
 
       - name: Apagar entorno QA
         if: always()
