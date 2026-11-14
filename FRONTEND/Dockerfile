@@ -10,7 +10,6 @@ ARG VITE_API_URL=http://localhost:4000
 COPY package*.json ./
 
 # Limpiar completamente e instalar dependencias
-# Esto soluciona problemas con dependencias opcionales de rollup y esbuild
 RUN rm -rf node_modules package-lock.json && \
     npm install && \
     npm install @rollup/rollup-linux-x64-gnu --save-optional && \
@@ -33,16 +32,13 @@ RUN npm run build
 # Etapa 2: Producción
 FROM nginx:alpine
 
-# Permitir que el usuario sin privilegios 'nginx' escuche en el puerto 80 sin ser root
-RUN apk add --no-cache libcap && \
-    setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx && \
-    sed -i 's/^user  nginx;/# user nginx;/' /etc/nginx/nginx.conf
-
 # Copiar los archivos construidos desde la etapa de construcción
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copiar configuración de nginx personalizada
+# Copiar configuración de nginx y cambiar puerto de escucha a 8080 (no privilegiado)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN sed -i -E 's/(listen\s+(\[::\]:)?)80/\18080/g' /etc/nginx/conf.d/default.conf && \
+    sed -i 's/^user  nginx;/# user nginx;/' /etc/nginx/nginx.conf
 
 # Asignar permisos de lectura/escritura necesarios al usuario 'nginx'
 RUN touch /var/run/nginx.pid && \
@@ -51,8 +47,8 @@ RUN touch /var/run/nginx.pid && \
 # Aplicar principio de menor privilegio (Mitiga hallazgo SAST)
 USER nginx
 
-# Exponer puerto 80
-EXPOSE 80
+# Exponer puerto no privilegiado 8080
+EXPOSE 8080
 
 # Comando para iniciar nginx
 CMD ["nginx", "-g", "daemon off;"]
