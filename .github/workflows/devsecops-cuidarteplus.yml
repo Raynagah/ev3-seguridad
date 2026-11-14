@@ -38,8 +38,13 @@ jobs:
       - name: Descargar código fuente
         uses: actions/checkout@v4
 
+      # Triaje SAST: se excluyen etiquetas de Actions y middleware CSRF (API stateless con Bearer JWT, sin cookies)
       - name: Ejecutar escaneo SAST (JavaScript, React, Express y Dockerfile)
-        run: semgrep scan --config auto --error --exclude="FRONTEND/tests" --exclude-rule="yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+        run: >
+          semgrep scan --config auto --error
+          --exclude="FRONTEND/tests"
+          --exclude-rule="yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+          --exclude-rule="javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage"
 
   # ETAPA 3: Build Docker, Pruebas E2E (Playwright) y DAST (OWASP ZAP)
   build-test-dast:
