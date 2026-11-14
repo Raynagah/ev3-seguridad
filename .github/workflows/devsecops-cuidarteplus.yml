@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Descargar código fuente (Source)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Detección temprana de secretos hardcodeados (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
