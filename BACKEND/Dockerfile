@@ -11,7 +11,6 @@ RUN npm ci --only=production
 # Copiar código de la aplicación
 COPY src/ ./src/
 COPY sql/ ./sql/
-COPY uploads/ ./uploads/
 
 # Crear directorios necesarios y asignar propiedad al usuario sin privilegios 'node'
 RUN mkdir -p uploads/contracts uploads/documentos && chown -R node:node /app
