@@ -8,7 +8,6 @@ import {
   CircularProgress,
   Button,
   Divider,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -37,11 +36,6 @@ export default function ExamenDetalle() {
   const [uploading, setUploading] = useState(false);
   const [openDelete, setOpenDelete] = useState(false);
 
-  useEffect(() => {
-    loadExamen();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
   const loadExamen = async () => {
     try {
       setLoading(true);
@@ -58,6 +52,14 @@ export default function ExamenDetalle() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // Manejo explícito de promesa (Mitiga INC-06 SonarQube)
+    loadExamen().catch(() => {
+      setLoading(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const handleDownloadDocument = async (documentoId) => {
     try {
@@ -77,9 +79,7 @@ export default function ExamenDetalle() {
   };
 
   const onDrop = async (acceptedFiles) => {
-    if (!examen) return;
-
-    if (acceptedFiles.length === 0) return;
+    if (!examen || acceptedFiles.length === 0) return;
 
     const formData = new FormData();
     formData.append("documento", acceptedFiles[0]);
@@ -95,7 +95,7 @@ export default function ExamenDetalle() {
       });
       toast.success("Documento subido exitosamente");
       setOpenUpload(false);
-      loadExamen();
+      await loadExamen();
     } catch {
       toast.error("Error al subir documento");
     } finally {
@@ -304,7 +304,7 @@ export default function ExamenDetalle() {
                             try {
                               await api.delete(`/documentos/${doc.id}`);
                               toast.success("Documento eliminado");
-                              loadExamen();
+                              await loadExamen();
                             } catch {
                               // El error ya se maneja en el interceptor
                             }
@@ -373,7 +373,7 @@ export default function ExamenDetalle() {
               color="text.secondary"
               sx={{ mt: 1, display: "block" }}
             >
-              Formatos permitidos: PDF, JPG, PNG (máximo 10MB)
+              Formatos permitidos: PDF, JPG, PNG (máximo 5MB)
             </Typography>
           </Box>
         </DialogContent>

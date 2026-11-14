@@ -1,23 +1,48 @@
 const express = require("express");
 const multer = require("multer");
+const path = require("node:path");
+const os = require("node:os");
+const fs = require("node:fs");
+const crypto = require("node:crypto");
 const { pool } = require("../db");
 const jwt = require("jsonwebtoken");
 const delayMiddleware = require("../middleware/delay");
-const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "inseguro";
 
-// Configurar multer para almacenar en memoria
+const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error("ERROR CRÍTICO DE SEGURIDAD: JWT_SECRET no está definido.");
+}
+
+// Límite configurable por variable de entorno (por defecto 5 MB, cumple <= 8 MB de SonarQube)
+const MAX_FILE_SIZE_BYTES =
+  Number.parseInt(process.env.MAX_FILE_SIZE_MB || "5", 10) * 1024 * 1024;
+
+// Configurar multer en almacenamiento temporal en disco para evitar agotamiento de RAM (INC-03)
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, os.tmpdir());
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = crypto.randomUUID();
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `cuidarteplus-${uniqueSuffix}${ext}`);
+  },
+});
+
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
+    fileSize: MAX_FILE_SIZE_BYTES,
+    files: 1, // Máximo 1 archivo por solicitud
   },
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       "application/pdf",
       "image/jpeg",
       "image/jpg",
-      "image/png"
+      "image/png",
     ];
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
@@ -43,85 +68,101 @@ function requireRole(req, allowedRoles) {
   if (!authUser) {
     return Promise.resolve({ error: "No autorizado", status: 401 });
   }
-  
-  return pool.query(
-    `SELECT r.nombre 
-     FROM usuario_roles ur
-     JOIN roles r ON r.id = ur.rol_id
-     WHERE ur.usuario_id = $1`,
-    [authUser.usuarioId]
-  ).then(result => {
-    const userRoles = result.rows.map(r => r.nombre);
-    const hasRole = allowedRoles.some(role => userRoles.includes(role));
-    if (!hasRole) {
-      return { error: "No autorizado", status: 403 };
-    }
-    return { authUser, userRoles };
-  }).catch(err => {
-    return { error: "Error al verificar roles", status: 500 };
-  });
+
+  return pool
+    .query(
+      `SELECT r.nombre 
+       FROM usuario_roles ur
+       JOIN roles r ON r.id = ur.rol_id
+       WHERE ur.usuario_id = $1`,
+      [authUser.usuarioId]
+    )
+    .then((result) => {
+      const userRoles = result.rows.map((r) => r.nombre);
+      const hasRole = allowedRoles.some((role) => userRoles.includes(role));
+      if (!hasRole) {
+        return { error: "No autorizado", status: 403 };
+      }
+      return { authUser, userRoles };
+    })
+    .catch(() => {
+      return { error: "Error al verificar roles", status: 500 };
+    });
 }
 
 // Subir documento de examen (médico y admin)
-router.post("/", delayMiddleware(5000), upload.single("documento"), async (req, res) => {
-  try {
-    const authCheck = await requireRole(req, ["medico", "admin"]);
-    if (authCheck.error) {
-      return res.status(authCheck.status).json({
-        error: authCheck.error,
-        glosa: "No tiene permisos para realizar esta acción",
+router.post(
+  "/",
+  delayMiddleware(5000),
+  upload.single("documento"),
+  async (req, res) => {
+    try {
+      const authCheck = await requireRole(req, ["medico", "admin"]);
+      if (authCheck.error) {
+        return res.status(authCheck.status).json({
+          error: authCheck.error,
+          glosa: "No tiene permisos para realizar esta acción",
+        });
+      }
+      const { authUser } = authCheck;
+      const { examen_medico_id, paciente_id } = req.body;
+
+      if (!examen_medico_id || !paciente_id) {
+        return res.status(400).json({
+          error: "Error de validación",
+          glosa: "examen_medico_id y paciente_id son requeridos",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Error de validación",
+          glosa: "Debe subir un documento",
+        });
+      }
+
+      // Leer archivo temporal desde disco y sanitizar nombre original (previene Path Traversal)
+      const fileBuffer = await fs.promises.readFile(req.file.path);
+      const safeOriginalName = path.basename(req.file.originalname);
+
+      const result = await pool.query(
+        `INSERT INTO documentos_examen (
+          examen_medico_id, paciente_id, documento, nombre_archivo
+        ) VALUES ($1, $2, $3, $4) RETURNING id, nombre_archivo, created_at`,
+        [examen_medico_id, paciente_id, fileBuffer, safeOriginalName]
+      );
+
+      const documento = result.rows[0];
+
+      await pool.query(
+        "INSERT INTO auditoria (usuario_id, accion) VALUES ($1, $2)",
+        [
+          authUser?.usuarioId || null,
+          `DOCUMENTOS_CREAR: subió documento "${documento.nombre_archivo}" para examen ID ${examen_medico_id}`,
+        ]
+      );
+
+      return res.status(201).json({ documento });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({
+        error: "Error al subir documentos",
+        glosa: err.message || err.toString(),
       });
+    } finally {
+      // Eliminar archivo temporal del disco en todos los casos
+      if (req.file?.path) {
+        await fs.promises.unlink(req.file.path).catch(() => {});
+      }
     }
-    const { authUser } = authCheck;
-
-    const { examen_medico_id, paciente_id } = req.body;
-
-    if (!examen_medico_id || !paciente_id) {
-      return res.status(400).json({
-        error: "Error de validación",
-        glosa: "examen_medico_id y paciente_id son requeridos",
-      });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({
-        error: "Error de validación",
-        glosa: "Debe subir un documento",
-      });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO documentos_examen (
-        examen_medico_id, paciente_id, documento, nombre_archivo
-      ) VALUES ($1, $2, $3, $4) RETURNING id, nombre_archivo, created_at`,
-      [examen_medico_id, paciente_id, req.file.buffer, req.file.originalname]
-    );
-
-    const documento = result.rows[0];
-
-    await pool.query(
-      "INSERT INTO auditoria (usuario_id, accion) VALUES ($1, $2)",
-      [
-        authUser?.usuarioId || null,
-        `DOCUMENTOS_CREAR: subió documento "${documento.nombre_archivo}" para examen ID ${examen_medico_id}`,
-      ]
-    );
-
-    res.status(201).json({ documento });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: "Error al subir documentos",
-      glosa: err.message || err.toString(),
-    });
   }
-});
+);
 
 // Obtener documentos de un examen (médico, admin y paciente)
 router.get("/examen/:examen_id", async (req, res) => {
   try {
     const authUser = getUserFromAuthHeader(req);
-    
+
     if (!authUser) {
       return res.status(401).json({
         error: "No autorizado",
@@ -129,7 +170,6 @@ router.get("/examen/:examen_id", async (req, res) => {
       });
     }
 
-    // Verificar roles
     const userRolesResult = await pool.query(
       `SELECT r.nombre 
        FROM usuario_roles ur
@@ -137,9 +177,8 @@ router.get("/examen/:examen_id", async (req, res) => {
        WHERE ur.usuario_id = $1`,
       [authUser.usuarioId]
     );
-    const userRoles = userRolesResult.rows.map(r => r.nombre);
+    const userRoles = userRolesResult.rows.map((r) => r.nombre);
 
-    // Si es paciente, verificar que el examen sea suyo
     if (userRoles.includes("paciente")) {
       const examenResult = await pool.query(
         `SELECT em.paciente_id, p.usuario_id 
@@ -148,8 +187,10 @@ router.get("/examen/:examen_id", async (req, res) => {
          WHERE em.id = $1`,
         [req.params.examen_id]
       );
-      if (examenResult.rows.length === 0 || 
-          examenResult.rows[0].usuario_id !== authUser.usuarioId) {
+      if (
+        examenResult.rows.length === 0 ||
+        examenResult.rows[0].usuario_id !== authUser.usuarioId
+      ) {
         return res.status(403).json({
           error: "No autorizado",
           glosa: "Solo puede ver sus propios documentos",
@@ -170,10 +211,10 @@ router.get("/examen/:examen_id", async (req, res) => {
       [req.params.examen_id]
     );
 
-    res.json(result.rows);
+    return res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Error al obtener documentos",
       glosa: err.message || err.toString(),
     });
@@ -184,7 +225,7 @@ router.get("/examen/:examen_id", async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const authUser = getUserFromAuthHeader(req);
-    
+
     if (!authUser) {
       return res.status(401).json({
         error: "No autorizado",
@@ -192,7 +233,6 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    // Verificar roles
     const userRolesResult = await pool.query(
       `SELECT r.nombre 
        FROM usuario_roles ur
@@ -200,9 +240,8 @@ router.get("/:id", async (req, res) => {
        WHERE ur.usuario_id = $1`,
       [authUser.usuarioId]
     );
-    const userRoles = userRolesResult.rows.map(r => r.nombre);
+    const userRoles = userRolesResult.rows.map((r) => r.nombre);
 
-    // Obtener documento
     const docResult = await pool.query(
       `SELECT de.*, em.paciente_id, p.usuario_id
        FROM documentos_examen de
@@ -218,7 +257,6 @@ router.get("/:id", async (req, res) => {
 
     const documento = docResult.rows[0];
 
-    // Si es paciente, verificar que el documento sea suyo
     if (userRoles.includes("paciente")) {
       if (documento.usuario_id !== authUser.usuarioId) {
         return res.status(403).json({
@@ -233,26 +271,26 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    // Detectar el tipo MIME basado en la extensión del archivo
-    const extension = documento.nombre_archivo.split('.').pop().toLowerCase();
+    const safeFileName = path
+      .basename(documento.nombre_archivo)
+      .replaceAll(/["\r\n]/g, "_");
+    const extension = safeFileName.split(".").pop().toLowerCase();
     let contentType = "application/pdf";
-    if (['jpg', 'jpeg'].includes(extension)) {
+    if (["jpg", "jpeg"].includes(extension)) {
       contentType = "image/jpeg";
-    } else if (extension === 'png') {
+    } else if (extension === "png") {
       contentType = "image/png";
-    } else if (extension === 'pdf') {
-      contentType = "application/pdf";
     }
-    
+
     res.setHeader("Content-Type", contentType);
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${documento.nombre_archivo}"`
+      `attachment; filename="${safeFileName}"`
     );
-    res.send(documento.documento);
+    return res.send(documento.documento);
   } catch (err) {
     console.error(err);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Error al descargar documento",
       glosa: err.message || err.toString(),
     });
@@ -276,8 +314,9 @@ router.delete("/:id", async (req, res) => {
       [req.params.id]
     );
 
-    if (result.rows.length === 0)
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: "No encontrado" });
+    }
 
     await pool.query(
       "INSERT INTO auditoria (usuario_id, accion) VALUES ($1, $2)",
@@ -287,10 +326,10 @@ router.delete("/:id", async (req, res) => {
       ]
     );
 
-    res.json({ deleted: true });
+    return res.json({ deleted: true });
   } catch (err) {
     console.error(err);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Error al eliminar documento",
       glosa: err.message || err.toString(),
     });
@@ -298,4 +337,3 @@ router.delete("/:id", async (req, res) => {
 });
 
 module.exports = router;
-
