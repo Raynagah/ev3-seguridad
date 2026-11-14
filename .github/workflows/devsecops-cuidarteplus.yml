@@ -51,13 +51,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Construir y levantar entorno aislado QA (Build)
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: CiTestPassword2026!
-          POSTGRES_DB: cuidarteplus
-          JWT_SECRET: ci-test-jwt-secret-key-2026
-          ALLOWED_ORIGINS: http://localhost:3333
-        run: docker compose up -d --build
+        run: |
+          export POSTGRES_USER=postgres
+          export POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}"
+          [ -z "$POSTGRES_PASSWORD" ] && export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+          export POSTGRES_DB=cuidarteplus
+          export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+          [ -z "$JWT_SECRET" ] && export JWT_SECRET=$(openssl rand -hex 32)
+          export ALLOWED_ORIGINS=http://localhost:3333
+          docker compose up -d --build
         
 
       - name: Ejecutar suite automatizada E2E y Normativa (Playwright)
