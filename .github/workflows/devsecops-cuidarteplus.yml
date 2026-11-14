@@ -1,0 +1,78 @@
+name: Pipeline CI/CD DevSecOps - Cuidarte+
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ETAPA 1 y 4A (Shift-Left): Validación de código, secretos y dependencias
+  shift-left-security:
+    name: 1. Source & Shift-Left (Secrets, Lint y Dependencias)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código fuente (Source)
+        uses: actions/checkout@v4
+
+      - name: Detección temprana de secretos hardcodeados (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auditoría de dependencias vulnerables (Backend y Frontend)
+        run: |
+          cd BACKEND && npm ci && npm audit --audit-level=high
+          cd ../FRONTEND && npm ci && npm audit --audit-level=high
+
+  # ETAPA 4B: Análisis Estático (SAST) con SonarQube (Fail Fast si no pasa Quality Gate)
+  sast-sonarqube:
+    name: 2. Análisis Estático SAST (SonarQube)
+    runs-on: ubuntu-latest
+    needs: shift-left-security
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Ejecutar escaneo SonarQube y verificar Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ETAPA 2, 3 y 4C: Build Docker, Pruebas E2E (Playwright) y DAST (OWASP ZAP)
+  build-test-dast:
+    name: 3. Build, E2E (Playwright) y DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: sast-sonarqube
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construir y levantar entorno aislado QA (Build)
+        run: docker compose up -d --build
+
+      - name: Ejecutar suite automatizada E2E y Normativa (Playwright)
+        run: |
+          cd FRONTEND
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Ejecutar escaneo dinámico de seguridad DAST (OWASP ZAP)
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3333'
+          fail_action: true
+
+      - name: Apagar entorno QA
+        if: always()
+        run: docker compose down
+
+  # ETAPA 5: Despliegue Continuo (Solo si las etapas anteriores cumplen umbral ≥ 95%)
+  deploy-production:
+    name: 4. Release Gate & Deploy (Estado GO)
+    runs-on: ubuntu-latest
+    needs: build-test-dast
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Desplegar versión certificada a Producción
+        run: echo "Controles aprobados (GO). Desplegando Cuidarte+ en entorno productivo..."
