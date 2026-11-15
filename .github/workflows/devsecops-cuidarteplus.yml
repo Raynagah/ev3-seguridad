@@ -76,6 +76,13 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
           npx playwright test
+          
+      - name: Ejecutar prueba de rendimiento y carga (k6 - 200 VUs)
+        run: |
+          docker run --rm --network=host \
+            -v "$(pwd)/PERFORMANCE:/scripts" \
+            -e TARGET_URL="http://172.17.0.1:3333" \
+            grafana/k6 run /scripts/k6-frontend-load.js    
 
       - name: Ejecutar escaneo dinámico de seguridad DAST (OWASP ZAP)
         run: |
